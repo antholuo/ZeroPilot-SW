@@ -79,3 +79,7 @@ cmake-build-*/
 
 # Simulation
 **/SimulationBuild/**
+
+.idea/
+
+.vscode/settings.json

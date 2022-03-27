@@ -1,11 +1,11 @@
 #include "attitudeStateClasses.hpp"
+#include "RSSI.hpp"
 
 /***********************************************************************************************************************
  * Definitions
  **********************************************************************************************************************/
 
 float OutputMixingMode::_channelOut[4];
-CommandsForAM fetchInstructionsMode::_MovementInstructions;
 SFOutput_t sensorFusionMode::_SFOutput;
 PID_Output_t PIDloopMode::_PidOutput;
 
@@ -13,21 +13,49 @@ PID_Output_t PIDloopMode::_PidOutput;
  * Code
  **********************************************************************************************************************/
 
+//Populate instruction data and decide between manual and auto flight modes
 void fetchInstructionsMode::execute(attitudeManager* attitudeMgr)
-{
-    // Needs to be rewritten over interchip since AM and PM are on different chips now
-    // GetFromPMToAM(&_PMInstructions);
+{    
+    const uint8_t TIMEOUT_THRESHOLD = 2; //Max cycles without data until connection is considered broken
+    _isAutonomous = false;
+
+    //Note: GetFromTeleop and GetFromPM should leave their corresponding instructions unchanged and return false when they fail
+    
+    if(GetFromTeleop(&_TeleopInstructions))
+    {
+        teleopTimeoutCount = 0;
+    }
+    else
+    {
+        if(teleopTimeoutCount < TIMEOUT_THRESHOLD)
+            teleopTimeoutCount++;
+    }
+
+    //TODO: Determine if RC is commanding to go autonomous
+    bool isTeleopCommandingAuto = false;
+    
+    if(!isTeleopCommandingAuto || GetFromPM(&_PMInstructions))
+    {
+        PMTimeoutCount = 0;
+    }
+    else
+    {
+        if(PMTimeoutCount < TIMEOUT_THRESHOLD)
+            PMTimeoutCount++;
+    }
+    
+    if(teleopTimeoutCount < TIMEOUT_THRESHOLD && !CommsFailed())
+    {
+        _isAutonomous = (isTeleopCommandingAuto && PMTimeoutCount < TIMEOUT_THRESHOLD);
+    }
+    else
+    {   
+        //Abort due to teleop failure
+        attitudeMgr->setState(FatalFailureMode::getInstance());
+        return;
+    }
 
     // The support is also here for sending stuff to Path manager, but there's nothing I need to send atm.
-
-    if (this -> autonomous) {
-        // run GetFromPMTOAM function, get instructions from interchip
-    }
-
-    else {
-        // get PPM values from RC, convert into struct
-    }
-
     attitudeMgr->setState(sensorFusionMode::getInstance());
 }
 
@@ -106,7 +134,8 @@ attitudeState& PIDloopMode::getInstance()
 
 void OutputMixingMode::execute(attitudeManager* attitudeMgr)
 {
-    PID_Output_t *PidOutput = PIDloopMode::GetPidOutput();
+    // *PIDOutput an array of four values corresponding to motor percentages for the 
+    PID_Output_t *PidOutput = PIDloopMode::GetPidOutput(); 
 
     OutputMixing_error_t ErrorStruct = OutputMixing_Execute(PidOutput, _channelOut);
 

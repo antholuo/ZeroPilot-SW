@@ -20,5 +20,4 @@ class attitudeManager
     private:
         attitudeState* currentState;
         AttMan::_Attitude_Manager_Cycle_Status status;
-        bool autonomous;
 };
