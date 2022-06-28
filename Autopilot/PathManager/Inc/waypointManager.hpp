@@ -15,6 +15,14 @@
 #include <cstdint>
 #include <stdlib.h>
 
+
+#if IS_FIXED_WING
+
+
+/***********************************************************************************************************************
+ * Fixed wing code
+ **********************************************************************************************************************/
+
 #define PATH_BUFFER_SIZE 100
 
 struct _WaypointManager_Data_In {
@@ -97,6 +105,8 @@ public:
      */
     _PathData* initialize_waypoint();                                                                                                              // Creates a blank waypoint
     _PathData* initialize_waypoint(long double longitude, long double latitude, int altitude, _WaypointOutputType waypointType);                   // Initialize a regular waypoint
+   
+
     _PathData* initialize_waypoint(long double longitude, long double latitude, int altitude, _WaypointOutputType waypointType, float turnRadius); // Initialize a "hold" waypoint
 
     /**
@@ -279,6 +289,175 @@ private:
     _WaypointStatus delete_waypoint(int waypointId);                                             // Deletes the waypoint with the specified ID
     _WaypointStatus update_waypoint(_PathData* updatedWaypoint, int waypointId);                 // Updates the waypoint with the specified ID
 };
+
+#else 
+
+/***********************************************************************************************************************
+ * DRONE CODE
+ **********************************************************************************************************************/
+#define PATH_BUFFER_SIZE 3
+
+struct _WaypointManager_Data_In {
+    long double latitude;
+    long double longitude;
+    int altitude;
+    double track;
+};
+
+// Stores error codes for the waypoint manager
+enum _WaypointStatus {WAYPOINT_SUCCESS = 0, UNDEFINED_FAILURE, CURRENT_INDEX_INVALID, UNDEFINED_PARAMETER, INVALID_PARAMETERS, TOO_MANY_WAYPOINTS};
+
+// Used in the waypointBufferStatus array to signal which elements are free
+enum _WaypointBufferStatus {FREE = 0, FULL};
+
+// Used to specify the modification type when updating the waypointBuffer array
+enum _WaypointBufferUpdateType {APPEND_WAYPOINT = 0, UPDATE_WAYPOINT, INSERT_WAYPOINT, DELETE_WAYPOINT};
+
+// Used to specify the type of output
+enum _WaypointOutputType {PATH_FOLLOW = 0, TAKEOFF_WAYPOINT, LANDING_WAYPOINT, HOME_WAYPOINT};
+
+// Used to specify the status of the head_home() method KEEP FOR NOW? 
+enum _HeadHomeStatus {HOME_TRUE = 0, HOME_FALSE, HOME_UNDEFINED_PARAMETER};
+
+/**
+* Structure stores information about the waypoints along our path to the destination and back. Got rid of turn radius
+*/
+struct _PathData {
+    _PathData * next;                 // Next waypoint
+    _PathData * previous;             // Previous waypoint
+    long double latitude;             // Latitude of waypoint
+    long double longitude;            // Longitude of waypoint
+    int altitude;                     // Altitude of waypoint
+    _WaypointOutputType waypointType; 
+};
+
+
+/**
+* Structure contains the data that will be returned to the Path Manager state manager.
+* This data will be used by the PID and coordinated turn engine to determine the commands to be sent to the Attitude Manager.
+*/
+struct _WaypointManager_Data_Out{
+    float desiredTrack;              // Desired track to stay on path
+    int desiredAltitude;                // Desired altitude at next waypoint
+    long double distanceToNextWaypoint; // Distance to the next waypoint (helps with airspeed PID)
+    float distanceX, distanceY, distanceZ;
+    float rotation; 
+    _WaypointStatus errorCode;          // Contains error codes
+    bool isDataNew;                     // Notifies PID modules if the data in this structure is new
+    int desiredAirspeed;                // FUN FACT WE NEED THIS 
+    uint32_t timeOfData;                // The time that the data in this structure was collected
+    _WaypointOutputType out_type;       // Output type (determines which parameters are defined)
+};
+
+class WaypointManager {
+public:
+
+    WaypointManager();
+    ~WaypointManager();
+
+    /**
+    * Initializes the flight path
+    *
+    * @param[in] _PathData * initialWaypoints -> These waypoints will be used to initialize the waypointBuffer array
+    * @param[in] int numberOfWaypoints -> Number of waypoints being initialized in the waypointBuffer array
+    * @param[in] _PathData* currentLocation -> Home base.
+    */
+    _WaypointStatus initialize_flight_path(_PathData * target, _PathData * currentLocation = nullptr); // Sets flight path and home base
+
+    /**
+     * Called by state machine to create new _PathData objects. This moves all heap allocation and ID management to the waypoint manager, giving the state machine less work
+     *
+     * First method returns an empty structure with only the ID initialized
+     * Second method initializes a regular waypoint
+     *
+     * Parameters have the same name as their corresponding parameters in the _Pathdata struct.
+     */
+    _PathData* initialize_waypoint();                                                                                                              // Creates a blank waypoint
+    _PathData* initialize_waypoint(long double longitude, long double latitude, int altitude, _WaypointOutputType waypointType);                   // Initialize a regular waypoint
+
+    // May need a initialize takeoff/landing waypoint? 
+   
+    //
+
+    /**
+    * Updates the _WaypointManager_Data_Out structure with new values.
+    *
+    * @param[in] _Waypoint_Data_In currentPosition -> contains the current coordinates, altitude, heading, and track
+    * @param[out] _WaypointManager_Data_Out &Data -> Memory address for a structure that holds the data for the state machine
+    * 
+    * @return status variable stating if any errors occured (0 means success)
+    */
+    _WaypointStatus get_next_directions(_WaypointManager_Data_In currentStatus, _WaypointManager_Data_Out *Data);
+    
+    // For testing purposes only:
+    float orbitCentreLat;
+    float orbitCentreLong;
+    float orbitCentreAlt;
+    _PathData * currentWaypoint;
+    /**
+     * Removes waypoint from the heap
+     */
+    void destroy_waypoint(_PathData * waypoint);
+private:
+
+    float currentTrack;
+
+    // For calculating desired track. This affects the sensitivity of the given desired tracks
+    float k_gain[2] = {0.01, 1.0f};
+
+    // Relative lat and long for coordinate calcilation
+    float relativeLongitude;
+    float relativeLatitude;
+
+    //Data that will be transferred
+    float desiredTrack;
+    int desiredAltitude;
+    float distanceX, distanceY, distanceZ;
+    float rotation;
+    long double distanceToNextWaypoint;
+    _WaypointStatus errorCode;
+    bool dataIsNew;
+    _WaypointOutputType outputType;
+
+    //Status variables
+    //bool goingHome;     // This is set to true when the head_home() function is called.
+    _WaypointStatus errorStatus;
+    float turnCenter[3];
+    int turnDesiredAltitude;
+    int turnDirection; // 1 for CW, 2 for CCW
+
+    //Helper Methods - Deleted follow_hold_pattern and follow_orbit
+    void follow_hold_pattern(float* position, float track);
+    void follow_waypoints(_PathData * currentWaypoint, float* position, float track);                               // Determines which of the methods below to call :))
+    void follow_line_segment(_PathData * currentWaypoint, float* position, float track);                            // In the instance where the waypoint after the next is not defined, we continue on the path we are currently on
+    void follow_last_line_segment(_PathData * currentWaypoint, float* position, float track);                       // In the instance where the next waypoint is not defined, follow previously defined path
+    void follow_orbit(float* position, float track);                                                                // Makes the plane follow an orbit with defined radius and direction
+    void follow_straight_path(float* waypointDirection, float* targetWaypoint, float* position, float track);       // Makes a plane follow a straight path (straight line following)
+
+    void update_return_data(_WaypointManager_Data_Out *Data);       // Updates data in the output structure
+
+    /**
+    * Takes GPS long and lat data and converts it into coordinates (better for calculating tracks and stuff)
+    *
+    * @param[in] long double longitude -> GPS longitide
+    * @param[in] long double latitude -> GPS latitude
+    * @param[out] float* xyCoordinates -> Array that will store the x and y coordinates of the plane
+    */
+    void get_coordinates(long double longitude, long double latitude, float* xyCoordinates);
+
+    /**
+     * Takes in two points and returns distance in metres
+     *
+     * @param[in] lat1, long2 --> Point 1
+     * @param[in] lat2, long2 --> Point 2
+     */
+    float get_distance(long double lat1, long double lon1, long double lat2, long double lon2);
+
+    
+    
+};
+
+#endif
 
 #endif
 

@@ -7,6 +7,7 @@
 #define COMMS_WITH_TELEMETRY_HPP
 
 #include "TelemPathInterface.hpp"
+#include "pathManager.hpp"
 
 /**
  * Initiate communication with telemetry.
@@ -17,13 +18,20 @@ void CommWithTelemInit();
  * Send path manager data to telemetry.
  * @param[in]   data   Pointer to struct with data.
  */
-void SendPathData(POGI *data);
+
 
 /**
  * Retrieve commands from the path manager.
  * @param[out]   commands   Pointer to struct to recieve commands.
  * @return True if commands were recieved.
  */
+#if IS_FIXED_WING 
 bool GetTelemetryCommands(Telemetry_PIGO_t *commands);
+void SendPathData(POGI *data);
+#else
+bool GetTelemetryCommands(fijo *commands);
+
+
+#endif
 
 #endif

@@ -7,10 +7,6 @@
 
 #include "waypointManager.hpp"
 
-// Values for orbitPathStatus parameter of WaypointManager
-#define LINE_FOLLOWING 0
-#define ORBIT_FOLLOWING 1
-
 //Constants
 #define EARTH_RADIUS 6378.137
 #define MAX_PATH_APPROACH_ANGLE ZP_PI/2
@@ -18,6 +14,14 @@
 // Reference Coordinates (University of Waterloo, Parking Lot C)
 #define REFERENCE_LONGITUDE -80.537331184
 #define REFERENCE_LATITUDE 43.467998128
+
+#if IS_FIXED_WING
+
+// Values for orbitPathStatus parameter of WaypointManager
+#define LINE_FOLLOWING 0
+#define ORBIT_FOLLOWING 1
+
+
 
 
 /*** INITIALIZATION ***/
@@ -148,6 +152,7 @@ _PathData* WaypointManager::initialize_waypoint() {
     return waypoint;
 }
 
+//for pathfollow type waypoints
 _PathData* WaypointManager::initialize_waypoint(long double longitude, long double latitude, int altitude, _WaypointOutputType waypointType) {
     _PathData* waypoint = new _PathData; // Create new waypoint in the heap
 
@@ -939,6 +944,338 @@ _WaypointStatus WaypointManager::update_waypoint(_PathData* updatedWaypoint, int
 }
 
 
+#else 
+
+/*************************************************************************************************************************************************************************
+
+DRONE CODE 
+
+**************************************************************************************************************************************************************************/
+WaypointManager::WaypointManager() {
+    // Initializes important array and id navigation constants
+    // currentIndex = 0;
+    // nextAssignedId = 1;
+    // numWaypoints = 0;
+    // nextFilledIndex = 0;
+
+    // Sets relative long and lat
+    relativeLongitude = REFERENCE_LONGITUDE;
+    relativeLatitude = REFERENCE_LATITUDE;
+
+    // Sets boolean variables
+    dataIsNew = false;
+    // orbitPathStatus = PATH_FOLLOW;
+    errorStatus = WAYPOINT_SUCCESS;
+
+    // Initialize all other parameters (defaults)
+    desiredTrack = 0;
+    desiredAltitude = 0;
+    distanceToNextWaypoint = 0.0;
+    distanceX = 0;
+    distanceY = 0;
+    distanceZ = 0;
+    currentTrack=0;
+    rotation = 0;
+    errorCode = WAYPOINT_SUCCESS;
+    dataIsNew = false;
+    outputType = PATH_FOLLOW;
+    turnDesiredAltitude = 0;
+    turnDirection = 0; // 1 for CW, 2 for CCW
+
+    this->currentWaypoint = nullptr;
+
+}
+
+_WaypointStatus WaypointManager::initialize_flight_path(_PathData * target, _PathData * currentLocation) {
+    
+    errorStatus = WAYPOINT_SUCCESS; 
+
+    // if we dont get currentLocation, I dont know how to handle that
+    if (currentLocation == nullptr || target == nullptr) {
+        errorStatus = UNDEFINED_FAILURE;
+        return errorStatus;
+    }
+
+    // Links waypoints together
+    //TODO figure out how to free data safely
+
+    if (this->currentWaypoint != nullptr) {
+        if (this->currentWaypoint->next != nullptr) {
+            destroy_waypoint(this->currentWaypoint->next);
+            this->currentWaypoint = nullptr;
+        }
+        destroy_waypoint(this->currentWaypoint);
+        this->currentWaypoint = nullptr;
+
+    }
+
+    this->currentWaypoint = currentLocation;
+    this->currentWaypoint->next = target;
+    target->previous = currentLocation;
+
+    return errorStatus;
+}
+
+_PathData* WaypointManager::initialize_waypoint() {
+    _PathData* waypoint = new _PathData; // Create new waypoint in the heap
+
+    if (!waypoint) {
+        return NULL;
+    }
+
+    // nextAssignedId++; // Increment ID so next waypoint has a different one
+    waypoint->latitude = -1;
+    waypoint->longitude = -1;
+    waypoint->altitude = 10; // Sets this to 10 as a default so plane does not crash. This can be changed by state machine.
+    waypoint->waypointType = PATH_FOLLOW;
+    // Set next and previous waypoints to empty for now
+    waypoint->next = nullptr;
+    waypoint->previous = nullptr;
+
+    return waypoint;
+}
+
+//for pathfollow type waypoints
+_PathData* WaypointManager::initialize_waypoint(long double longitude, long double latitude, int altitude, _WaypointOutputType waypointType) {
+    _PathData* waypoint = new _PathData; // Create new waypoint in the heap
+
+    if (!waypoint) {
+        return NULL;
+    }
+
+    // nextAssignedId++; // Increment ID so next waypoint has a different one 
+    waypoint->latitude = latitude;
+    waypoint->longitude = longitude;
+
+    // Does error catching before assigning value
+    if (altitude >= 0) {
+        waypoint->altitude = altitude;
+    } else {
+        waypoint->altitude = 10; // Default value
+    }    
+    
+    waypoint->waypointType = waypointType;
+   
+    // Set next and previous waypoints to empty for now
+    waypoint->next = nullptr;
+    waypoint->previous = nullptr;
+
+    return waypoint;
+}
+
+/*** UNIVERSAL HELPERS (universal to this file, ofc) ***/
+
+void WaypointManager::get_coordinates(long double longitude, long double latitude, float* xyCoordinates) { // Parameters expected to be in degrees
+    xyCoordinates[0] = get_distance(relativeLatitude, relativeLongitude, relativeLatitude, longitude); //Calculates longitude (x coordinate) relative to defined origin (RELATIVE_LONGITUDE, RELATIVE_LATITUDE)
+    xyCoordinates[1] = get_distance(relativeLatitude, relativeLongitude, latitude, relativeLongitude); //Calculates latitude (y coordinate) relative to defined origin (RELATIVE_LONGITUDE, RELATIVE_LATITUDE)
+}
+
+float WaypointManager::get_distance(long double lat1, long double lon1, long double lat2, long double lon2) { // Parameters expected to be in degrees
+    // Longitude and latitude stored in degrees
+    // This calculation uses the Haversine formula
+    long double change_in_Lat = DEG_TO_RAD(lat2 - lat1); //Converts change in latitude to radians
+    long double change_in_lon = DEG_TO_RAD(lon2 - lon1); //Converts change in longitude to radians
+
+    double haversine_ans = sin(change_in_Lat / 2) * sin(change_in_Lat / 2) + cos(DEG_TO_RAD(lat1)) * cos(DEG_TO_RAD(lat2)) * sin(change_in_lon / 2) * sin(change_in_lon / 2); // In kilometers
+
+    if ((change_in_Lat >= 0 && change_in_lon >=0)||(change_in_Lat < 0 && change_in_lon < 0)){
+        return EARTH_RADIUS * (2 * atan2(sqrt(haversine_ans),sqrt(1 - haversine_ans))) * 1000; //Multiply by 1000 to convert to metres
+    } else {
+        return EARTH_RADIUS * (2 * atan2(sqrt(haversine_ans),sqrt(1 - haversine_ans))) * -1000;
+    }
+}
+
+/*** NAVIGATION ***/
+_WaypointStatus WaypointManager::get_next_directions(_WaypointManager_Data_In currentStatus, _WaypointManager_Data_Out *Data) {
+
+    errorCode = WAYPOINT_SUCCESS;
+
+    float position[3]; 
+    // Gets current track
+    currentTrack = (float) currentStatus.track;
+
+    // Sets position array
+    get_coordinates(currentStatus.longitude, currentStatus.latitude, position);
+    position[2] = (float) currentStatus.altitude;
+
+    if(this->currentWaypoint == nullptr) {
+        errorCode = UNDEFINED_FAILURE;
+        return errorCode;
+    }
+
+    // Calculates desired track, altitude, and all output values
+    follow_waypoints(this->currentWaypoint, position, currentTrack);
+
+    // Updates the return structure
+    dataIsNew = true;
+    outputType = PATH_FOLLOW;
+    update_return_data(Data); 
+
+    return errorCode;
+}
+
+void WaypointManager::update_return_data(_WaypointManager_Data_Out *Data) {
+    Data->desiredTrack = desiredTrack;
+    Data->desiredAltitude =  desiredAltitude;
+    Data->distanceToNextWaypoint = distanceToNextWaypoint;
+    Data->distanceX = distanceX;
+    Data->distanceY = distanceY;
+    Data->distanceZ = distanceZ;
+    Data->rotation = rotation;
+    Data->errorCode = errorCode;
+    Data->isDataNew = dataIsNew;
+    dataIsNew = false; 
+    Data->timeOfData = 0;
+    Data->desiredAirspeed = 0; 
+    Data->out_type = outputType;
+}
+
+void WaypointManager::follow_waypoints(_PathData * currentWaypoint, float* position, float track) {
+    float waypointPosition[3]; 
+    get_coordinates(currentWaypoint->longitude, currentWaypoint->latitude, waypointPosition);
+    waypointPosition[2] = currentWaypoint->altitude;
+
+    if (currentWaypoint->next == nullptr) { // If target waypoint is not defined
+        // std::cout << "Next not defined" << std::endl;
+        follow_last_line_segment(currentWaypoint, position, track);
+        return;
+    }
+     // If waypoint after target waypoint is not defined
+    follow_line_segment(currentWaypoint, position, track);
+
+     //Deleted any orbit following code  
+}
+
+void WaypointManager::follow_line_segment(_PathData * currentWaypoint, float* position, float track) {
+    float waypointPosition[3];
+    get_coordinates(currentWaypoint->longitude, currentWaypoint->latitude, waypointPosition);
+    waypointPosition[2] = currentWaypoint->altitude;
+
+    // Defines target waypoint
+    _PathData * targetWaypoint = currentWaypoint->next;
+    float targetCoordinates[3];
+    get_coordinates(targetWaypoint->longitude, targetWaypoint->latitude, targetCoordinates);
+    targetCoordinates[2] = targetWaypoint->altitude;
+
+    // Direction to next waypoint
+    float waypointDirection[3];
+    float norm = sqrt(pow(targetCoordinates[0] - waypointPosition[0],2) + pow(targetCoordinates[1] - waypointPosition[1],2) + pow(targetCoordinates[2] - waypointPosition[2],2));
+    waypointDirection[0] = (targetCoordinates[0] - waypointPosition[0])/norm;
+    waypointDirection[1] = (targetCoordinates[1] - waypointPosition[1])/norm;
+    waypointDirection[2] = (targetCoordinates[2] - waypointPosition[2])/norm;
+
+    // Calculates distance to next waypoint
+    float distanceToWaypoint = sqrt(pow(targetCoordinates[0] - position[0],2) + pow(targetCoordinates[1] - position[1],2) + pow(targetCoordinates[2] - position[2],2));
+    distanceToNextWaypoint = distanceToWaypoint; // Stores distance to next waypoint :))
+
+    //Calculates X,Y,Z distance to next waypoint
+    distanceX=targetCoordinates[0] - position[0];
+    distanceY=targetCoordinates[1] - position[1];
+    distanceZ=targetCoordinates[2] - position[2];
+
+    // std::cout << "Here1.1 --> " << waypointDirection[0] << " " << waypointDirection[1] << " " << waypointDirection[2] << std::endl;
+    // std::cout << "Here1.2 --> " << targetCoordinates[0] << " " << targetCoordinates[1] << " " << targetCoordinates[2] << std::endl;
+    // std::cout << "Here1.3 --> " << waypointPosition[0] << " " << waypointPosition[1] << " " << waypointPosition[2] << std::endl;
+    // std::cout << track << std::endl;
+
+    follow_straight_path(waypointDirection, targetCoordinates, position, track);
+}
+
+void WaypointManager::follow_last_line_segment(_PathData * currentWaypoint, float* position, float track) {
+    // Current position is set to waypointPosition
+    float waypointPosition[3];
+    waypointPosition[0] = position[0];
+    waypointPosition[1] = position[1];
+    waypointPosition[2] = position[2];
+
+    // Target waypoint is the current waypoint
+    _PathData * targetWaypoint = currentWaypoint;
+    float targetCoordinates[3];
+    get_coordinates(targetWaypoint->longitude, targetWaypoint->latitude, targetCoordinates);
+    targetCoordinates[2] = targetWaypoint->altitude;
+
+    // Direction between waypoints
+    float waypointDirection[3];
+    float norm = sqrt(pow(targetCoordinates[0] - waypointPosition[0],2) + pow(targetCoordinates[1] - waypointPosition[1],2) + pow(targetCoordinates[2] - waypointPosition[2],2));
+    waypointDirection[0] = (targetCoordinates[0] - waypointPosition[0])/norm;
+    waypointDirection[1] = (targetCoordinates[1] - waypointPosition[1])/norm;
+    waypointDirection[2] = (targetCoordinates[2] - waypointPosition[2])/norm;
+
+    // Calculates distance to next waypoint
+    float distanceToWaypoint = sqrt(pow(targetCoordinates[0] - position[0],2) + pow(targetCoordinates[1] - position[1],2) + pow(targetCoordinates[2] - position[2],2));
+    distanceToNextWaypoint = distanceToWaypoint; // Stores distance to next waypoint :))
+
+    //Calculates X,Y,Z distance to next waypoint
+    distanceX=targetCoordinates[0] - position[0];
+    distanceY=targetCoordinates[1] - position[1];
+    distanceZ=targetCoordinates[2] - position[2];
+
+    // If dot product positive, then wait for commands
+    float dotProduct = waypointDirection[0] * (position[0] - targetCoordinates[0]) + waypointDirection[1] * (position[1] - targetCoordinates[1]) + waypointDirection[2] * (position[2] - targetCoordinates[2]);
+    if (dotProduct > 0){
+        turnDirection = 1; // Automatically turn CCW
+        turnDesiredAltitude = targetWaypoint->altitude;
+        turnCenter[0] = targetWaypoint->longitude;
+        turnCenter[1] = targetWaypoint->latitude;
+        turnCenter[2] = turnDesiredAltitude; 
+    }
+
+    follow_straight_path(waypointDirection, targetCoordinates, position, track);
+}
+
+void WaypointManager::follow_straight_path(float* waypointDirection, float* targetWaypoint, float* position, float track) {
+    track = DEG_TO_RAD(90 - track);//90 - track = track to cartesian track
+    float courseAngle = atan2(waypointDirection[1], waypointDirection[0]); // (y,x) format
+    
+    // Normalizes angles
+    // First gets the angle between 0 and 2 pi
+    if (courseAngle - track >= 2 * ZP_PI) {
+        courseAngle = fmod(courseAngle, 2 * ZP_PI);
+    } else if (courseAngle - track < 0.0) {
+        courseAngle = fmod(courseAngle, 2 * ZP_PI) + 2 * ZP_PI;
+    }
+    // Now ensures that courseAngle is between -pi and pi
+    if (courseAngle > ZP_PI && courseAngle <= 2 * ZP_PI) {
+        courseAngle -= 2 * ZP_PI;
+    }
+
+    // Calculates desired track
+    float pathError = -sin(courseAngle) * (position[0] - targetWaypoint[0]) + cos(courseAngle) * (position[1] - targetWaypoint[1]);
+    float calcTrack = 90 - RAD_TO_DEG(courseAngle - MAX_PATH_APPROACH_ANGLE * 2/ZP_PI * atan(k_gain[PATH_FOLLOW] * pathError)); //Heading in degrees (magnetic) 
+    
+    // Normalizes track (keeps it between 0.0 and 259.9999)
+    if (calcTrack >= 360.0) {
+        calcTrack = fmod(calcTrack, 360.0);
+    } else if (calcTrack < 0.0) {
+        calcTrack = fmod(calcTrack, 360.0) + 360.0;
+    }
+    
+    // Sets the return values 
+    desiredTrack = calcTrack;
+
+    if (fabs(calcTrack-currentTrack) < fabs(currentTrack - calcTrack)){
+        rotation = calcTrack - currentTrack;
+    }
+    else{
+        rotation = currentTrack - calcTrack;
+    }
+    outputType = PATH_FOLLOW;
+    desiredAltitude = targetWaypoint[2];
+
+}
+
+
+/*** FLIGHT PATH MANAGEMENT ***/
+
+void WaypointManager::destroy_waypoint(_PathData *waypoint) {
+    // Ensures waypoint is not linked before deleting
+    waypoint->next = nullptr;
+    waypoint->previous = nullptr;
+    delete waypoint; 
+}
+
+#endif 
+
 /*** MISCELLANEOUS ***/
 
 
@@ -962,10 +1299,6 @@ _WaypointBufferStatus WaypointManager::get_status_of_index(int index) {
     return waypointBufferStatus[index];
 }
 
-_PathData * WaypointManager::get_home_base() {
-    return homeBase;
-}
-
 int WaypointManager::get_current_index() {
     return currentIndex;
 }
@@ -974,16 +1307,8 @@ int WaypointManager::get_id_of_current_index() {
     return waypointBuffer[currentIndex] ? waypointBuffer[currentIndex]->waypointId : 0;
 }
 
-bool WaypointManager::is_home_base_initialized() {
-    return homeBase ? true : false;
-}
-
 // For valgrind tests
 WaypointManager::~WaypointManager() {
-    if (homeBase != nullptr) { // Only call if homeBase is initialized
-        clear_home_base();
-    }
-
     if (numWaypoints != 0) { // Only call if the waypointBuffer has waypoints in it
         clear_path_nodes();
     }

@@ -5,6 +5,8 @@
 
 #include "cruisingState.hpp"
 
+#if IS_FIXED_WING
+
 // The following functions are used to update the ID array that is a part of the CruisingState class
 static void appendNewElement(int * idArray, int newId);             // Adds newId to the first free element in idArray
 static int indexOfDesiredId(int * idArray, int id);                 // Returns the index of id in idArray
@@ -25,6 +27,7 @@ _ModifyFlightPathErrorCode editFlightPath(Telemetry_PIGO_t * telemetryData, Wayp
     _WaypointStatus editingStatus = WAYPOINT_SUCCESS;
 
     /* Editing the flight path */
+
 
     if (telemetryData->numWaypoints == 1 && (telemetryData->waypointModifyFlightPathCommand >= 2 && telemetryData->waypointModifyFlightPathCommand <= 4)) { // Inserting, Appending, or Updating a waypoint
 
@@ -53,6 +56,8 @@ _ModifyFlightPathErrorCode editFlightPath(Telemetry_PIGO_t * telemetryData, Wayp
             if (editingStatus == WAYPOINT_SUCCESS) { // Update ID array if edit was successful
                 appendNewElement(idArray, modifyWaypoint->waypointId); // Update the idArray
             }
+
+        
 
         } else if (telemetryData->waypointModifyFlightPathCommand == INSERT) { // Insert
 
@@ -290,5 +295,75 @@ void clearArray(int * idArray) {
         idArray[i] = 0;
     }
 }
+
+#else 
+/*****************************************************************************************************************************
+DRONE CODE 
+******************************************************************************************************************************/
+
+#define DEFAULT_ALTITUDE 6 // hardcoding altitude as 6m (Manav's idea) (this might not even be in metres) 
+
+
+// Removed int array 
+_ModifyFlightPathErrorCode editFlightPath(WaypointManager& cruisingStateManager, fijo * telemetryData, _WaypointManager_Data_In input) {
+    // If no commands given, just skip over this function
+
+    if (telemetryData == nullptr) {
+        return MODIFY_CRUISING_ERROR;
+    } 
+    
+    _WaypointOutputType waypointType = PATH_FOLLOW;
+    _WaypointStatus editingStatus = WAYPOINT_SUCCESS;
+
+    /* Editing the flight path */
+    
+    //Creating Target Waypoint 
+    _PathData * targetWaypoint = cruisingStateManager.initialize_waypoint(telemetryData->gpsCoord.longitude, telemetryData->gpsCoord.lattiude, DEFAULT_ALTITUDE, waypointType); 
+    _PathData * inputWaypoint = cruisingStateManager.initialize_waypoint(input.longitude,input.latitude, input.altitude, waypointType);
+    
+    // delete the existing stuff
+    if (cruisingStateManager.currentWaypoint != nullptr) {
+        if (cruisingStateManager.currentWaypoint->next != nullptr) {
+            cruisingStateManager.destroy_waypoint(cruisingStateManager.currentWaypoint->next);
+            cruisingStateManager.currentWaypoint->next = nullptr;
+        }
+        cruisingStateManager.destroy_waypoint(cruisingStateManager.currentWaypoint);
+        cruisingStateManager.currentWaypoint = nullptr;
+    }
+
+    cruisingStateManager.currentWaypoint = inputWaypoint;
+    cruisingStateManager.currentWaypoint->next = targetWaypoint;
+    cruisingStateManager.currentWaypoint->next->previous = inputWaypoint;
+    // Return appropriate error code
+    return MODIFY_CRUISING_SUCCESS;
+} 
+
+// Deleted any holding/circling code 
+_GetNextDirectionsErrorCode pathFollow( WaypointManager& cruisingStateManager, fijo * telemetryData, _WaypointManager_Data_In input, _WaypointManager_Data_Out * output) {
+
+    _WaypointStatus pathFollowingStatus = UNDEFINED_PARAMETER;
+
+    pathFollowingStatus = cruisingStateManager.get_next_directions(input, output);
+
+    output->desiredAirspeed = CRUISING_AIRSPEED; //aadi pls keep this line. no i dont think i will. oi
+    // Return appropriate error code
+    if (pathFollowingStatus == WAYPOINT_SUCCESS) {
+        return PATH_CRUISING_SUCCESS;
+    } else {
+        return PATH_CRUISING_ERROR;
+    }
+}
+
+void setReturnValues(_CruisingState_Telemetry_Return * _returnToGround, WaypointManager& cruisingStateManager, _ModifyFlightPathErrorCode editErrorCode, _GetNextDirectionsErrorCode pathErrorCode) {
+    // _returnToGround->currentWaypointId = cruisingStateManager.get_id_of_current_index();
+    // _returnToGround->currentWaypointIndex = cruisingStateManager.get_current_index();
+    // _returnToGround->homeBaseInitialized = cruisingStateManager.is_home_base_initialized();
+
+    _returnToGround->editingFlightPathErrorCode = (uint8_t) editErrorCode;
+    _returnToGround->pathFollowingErrorCode = (uint8_t) pathErrorCode;
+}
+
+//Don't have an array of waypoints for drone - commenting it out for now
+#endif
 
 

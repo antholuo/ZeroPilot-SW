@@ -1,9 +1,18 @@
 #include "pathStateClasses.hpp"
 
+
+/***********************************************************************************************************************
+ * FIXED WING
+ **********************************************************************************************************************/
+
+
+#if IS_FIXED_WING
+
+
+
 /***********************************************************************************************************************
  * Static Member Variable Declarations
  **********************************************************************************************************************/
-
 Telemetry_PIGO_t commsWithTelemetry::_incomingData;
 _CruisingState_Telemetry_Return cruisingState::_returnToGround;
 _WaypointManager_Data_In cruisingState::_inputdata;
@@ -67,7 +76,9 @@ _WaypointManager_Data_Out landingTouchdownStage::waypointOutput;
 void commsWithAttitude::execute(pathManager* pathMgr)
 {
 
+    #if IS_FIXED_WING
     bool newDataAvailable = GetFromAMToPM(&_receivedData); // Gets attitude manager data
+    #endif
 
     // Gets data used to populate CommandsForAM struct
     CoordinatedTurnAttitudeManagerCommands_t * turnCommands = coordinateTurnElevation::GetRollAndRudder();
@@ -219,6 +230,7 @@ void cruisingState::execute(pathManager* pathMgr)
     _ModifyFlightPathErrorCode editError = editFlightPath(telemetryData, cruisingStateManager, waypointIDArray); // Edit flight path if applicable
     _GetNextDirectionsErrorCode pathError = pathFollow(telemetryData, cruisingStateManager, _inputdata, &_outputdata, goingHome, inHold); // Get next direction or modify flight behaviour pattern
     setReturnValues(&_returnToGround, cruisingStateManager, editError, pathError); // Set error codes
+
 
     if(pathMgr->isError)
     {
@@ -722,3 +734,538 @@ pathManagerState& takeoffClimbStage::getInstance()
     static takeoffClimbStage singleton;
     return singleton;
 }
+
+
+
+#else 
+
+/****************************************************************************************************
+DRONE CODE
+****************************************************************************************************/
+
+/***********************************************************************************************************************
+ * Static Member Variable Declarations
+ **********************************************************************************************************************/
+
+
+fijo commsWithTelemetry::_incomingData;
+_CruisingState_Telemetry_Return cruisingState::_returnToGround;
+_WaypointManager_Data_In cruisingState::_inputdata;
+_WaypointManager_Data_Out cruisingState::_outputdata;
+SFOutput_t sensorFusion::_sfOutputData;
+IMU_Data_t sensorFusion::_imudata;
+// CoordinatedTurnAttitudeManagerCommands_t coordinateTurnElevation::_rollandrudder;
+// AltitudeAirspeedCommands_t coordinateTurnElevation::_pitchandairspeed;
+
+// No longer reciving data from AM 
+//AttitudeData commsWithAttitude::_receivedData;
+
+// Landing and Takeoff Variables (some stages DO NOT need waypoint inputs, it's not a mistake that some are missing)
+// For landing and takeoff states that use waypoint manager functions, the variables below will hold the I/O that is needed for those functions to work
+
+// Preflight
+_LandingTakeoffInput preflightStage::input;
+_LandingTakeoffOutput preflightStage::output;
+_WaypointManager_Data_Out preflightStage::waypointOutput;
+_PathData * preflightStage::currentLocation;
+_PathData * preflightStage::targetWaypoint;
+WaypointManager preflightStage::preflightPath;
+_WaypointStatus preflightStage::waypointStatus;
+
+// Takeoff
+_LandingTakeoffInput takeoffStage::input;
+_LandingTakeoffOutput takeoffStage::output;
+_PathData * takeoffStage::currentLocation;
+_PathData * takeoffStage::targetWaypoint;
+WaypointManager takeOffPath;
+_WaypointManager_Data_In takeoffStage::waypointInput;
+_WaypointManager_Data_Out takeoffStage::waypointOutput;
+ _WaypointStatus takeoffStage::waypointStatus;
+
+
+
+//Landing
+_LandingTakeoffInput landingStage::input;
+_LandingTakeoffOutput landingStage::output;
+_WaypointManager_Data_In landingStage::waypointInput;
+_WaypointManager_Data_Out landingStage::waypointOutput;
+_WaypointStatus landingStage::waypointStatus;
+_PathData * landingStage::currentLocation;
+_PathData * landingStage::targetWaypoint;
+WaypointManager landingStage::landingPath;
+_LandingPath landingStage::path;
+
+#define ON_GROUND_ALT 2 //minimum on ground altitude
+constexpr int CRUISING_AIRSPEED {15};
+
+
+
+
+/***********************************************************************************************************************
+ * Code
+ **********************************************************************************************************************/
+
+void commsWithAttitude::execute(pathManager* pathMgr)
+{
+
+
+    // CoordinatedTurnAttitudeManagerCommands_t * turnCommands = coordinateTurnElevation::GetRollAndRudder();
+    // AltitudeAirspeedCommands_t * altCommands = coordinateTurnElevation::GetPitchAndAirspeed();
+
+    _WaypointManager_Data_Out * waypointOutput {}; 
+    
+    //deciding which stage we get output data from 
+    switch(pathMgr->stage){
+        case LANDING:
+            waypointOutput = landingStage::GetOutputData();
+            break;
+        case CRUISING:
+            waypointOutput = cruisingState::GetOutputData();
+            break;
+        case PREFLIGHT:
+            waypointOutput = preflightStage::GetOutputData();
+            break;
+        case TAKEOFF:
+           waypointOutput = takeoffStage::GetOutputData();
+            break;
+        default:
+            waypointOutput = cruisingState::GetOutputData();
+    }
+
+
+    CommandsForAM toSend {};
+
+    toSend.desiredX = waypointOutput->distanceX;
+    toSend.desiredY = waypointOutput->distanceY;
+    toSend.desiredZ = waypointOutput->distanceZ;
+    toSend.rotation = waypointOutput->rotation; 
+    toSend.airspeed = waypointOutput->desiredAirspeed; 
+
+
+    // SendFromPMToAM(&toSend); // Sends commands to attitude manager - For now, commented out because I was told to 
+
+    pathMgr->setState(commsWithTelemetry::getInstance());
+}
+
+pathManagerState& commsWithAttitude::getInstance()
+{
+    static commsWithAttitude singleton;
+    return singleton;
+}
+
+void commsWithTelemetry::execute(pathManager* pathMgr)
+{
+    GetTelemetryCommands(&_incomingData);
+
+    // should there be a replacement for this?
+    // #ifndef SIMULATION
+    // setPitchPercent(_incomingData.gimbalPitch);
+    // setYawPercent(_incomingData.gimbalYaw);
+    // #endif
+
+    if(pathMgr->isError)
+    {
+        pathMgr->setState(fatalFailureMode::getInstance());
+    }
+    else
+    {
+        pathMgr->setState(sensorFusion::getInstance());
+    }
+}
+
+pathManagerState& commsWithTelemetry::getInstance()
+{
+    static commsWithTelemetry singleton;
+    return singleton;
+}
+
+void sensorFusion::execute(pathManager* pathMgr)
+{
+    SFError_t error = SF_GetResult(&_sfOutputData); // Gets current Sensor fusion output struct
+    _imudata = SF_GetRawIMU();
+
+    if(pathMgr->isError)
+    {
+        pathMgr->setState(fatalFailureMode::getInstance());
+    }
+    else
+    {
+        pathMgr->setState(resetVariables::getInstance());
+    }
+}
+
+pathManagerState& sensorFusion::getInstance()
+{
+    static sensorFusion singleton;
+    return singleton;
+}
+
+void resetVariables::execute(pathManager* pathMgr)
+{
+    //resetting the variables for passby
+    if(pathMgr->isError)
+    {
+        pathMgr->setState(fatalFailureMode::getInstance());
+    }
+
+    //if takeOff command is false, start landing
+    if(!commsWithTelemetry::GetTelemetryIncomingData()->takeoffCommand)
+    {
+        pathMgr->stage = LANDING;
+    
+    }
+
+    //if takeOff command is true and we are still on the ground, start preTakeOff 
+    if(commsWithTelemetry::GetTelemetryIncomingData()->takeoffCommand && sensorFusion::GetSFOutput()->altitude < ON_GROUND_ALT)
+    {
+        pathMgr->stage = PREFLIGHT;
+
+    }
+
+    //checking of 
+    if (pathMgr->stage == PREFLIGHT && preflightStage::getPreFlightCompleteStatus){
+        pathMgr->stage = TAKEOFF; 
+
+    }
+
+     // If we are above the ground, reached a certain height, and takeOff is still true, begin cruising 
+    if(sensorFusion::GetSFOutput()->altitude > EXIT_TAKEOFF_ALTITUDE && commsWithTelemetry::GetTelemetryIncomingData()->takeoffCommand)
+    {
+        pathMgr->stage = CRUISING;
+
+    }
+ 
+
+    //I have deleted reset passby 
+    switch(pathMgr->stage){
+        case LANDING:
+            pathMgr->setState(landingStage::getInstance());
+            break;
+        case CRUISING:
+            //no control details need to be reset for cruising state
+            pathMgr->setState(cruisingState::getInstance());
+            break;
+        case PREFLIGHT:
+            pathMgr->setState(preflightStage::getInstance());
+            break;
+        case TAKEOFF:
+            pathMgr->setState(takeoffStage::getInstance());
+            break;
+        default:
+            pathMgr->setState(cruisingState::getInstance());
+    }
+}
+
+pathManagerState& resetVariables::getInstance()
+{
+    static resetVariables singleton;
+    return singleton;
+}
+
+void cruisingState::execute(pathManager* pathMgr)
+{
+
+    // telementryData is where we want to go, target waypoint
+    fijo * telemetryData = commsWithTelemetry::GetTelemetryIncomingData(); // Get struct from telemetry state with all of the commands and values.
+    SFOutput_t * sensFusionOutput = sensorFusion::GetSFOutput(); // Get sensor fusion data
+
+    // Set waypoint manager input struct 
+    // input data is the current position, should be middle waypoint
+    _inputdata.track = sensFusionOutput->track; // Gets track
+    _inputdata.longitude = sensFusionOutput->longitude; // setting current waypoint longitude to SF longitude 
+    _inputdata.latitude = sensFusionOutput->latitude;
+    _inputdata.altitude = sensFusionOutput->altitude;
+
+    // Call module functions - These will be changed later 
+
+    //initializing current and target waypoint, setting the relationship of their pointers 
+    _ModifyFlightPathErrorCode editError = editFlightPath(cruisingStateManager, telemetryData, this->_inputdata); // Edit flight path if applicable
+    
+    
+    _GetNextDirectionsErrorCode pathError = pathFollow(cruisingStateManager, telemetryData, _inputdata, &_outputdata); // Get next direction or modify flight behaviour pattern
+    setReturnValues(&_returnToGround, cruisingStateManager, editError, pathError); // Set error codes
+
+    if(pathMgr->isError)
+    {
+        pathMgr->setState(fatalFailureMode::getInstance());
+    }
+    else
+    {
+        // pathMgr->setState(coordinateTurnElevation::getInstance());
+         pathMgr->setState(commsWithAttitude::getInstance()); 
+    }
+}
+
+pathManagerState& cruisingState::getInstance()
+{
+    static cruisingState singleton;
+    return singleton;
+}
+
+
+//KILL MOST OF THIS WITH FIRE -> DONT NEED THIS 
+// void coordinateTurnElevation::execute(pathManager* pathMgr)
+// {
+
+//     SFOutput_t * sensFusionOutput = sensorFusion::GetSFOutput(); // Get sensor fusion data
+//     IMU_Data_t * imudata = sensorFusion::GetIMUData(); // Gets raw IMU data
+//     _WaypointManager_Data_Out * waypointOutput = cruisingState::GetOutputData(); // Get output data from waypoint manager
+
+//     CoordinatedTurnInput_t turnInput {};
+//     AltitudeAirspeedInput_t altAirspeedInput {};
+    
+//     _LandingTakeoffOutput outputHolder; //had a bug with initializing the passby details, defining the pointer like this fixed it
+//     _LandingTakeoffOutput * landingTakeoffOutput = &outputHolder;
+//     //get elevation and turning data
+//     //loading in commands data from each of the states
+//     switch(pathMgr->stage){
+//         case PREFLIGHT:
+//             landingTakeoffOutput = preflightStage::getControlOutput();
+//             break;
+//         case LANDING:
+//             landingTakeoffOutput = landingStage::getControlOutput();
+//             break;
+//         case TAKEOFF:
+//             landingTakeoffOutput = takeoffStage::getControlOutput();
+//             break;
+//         case CRUISING:
+//             turnInput.currentHeadingTrack = sensFusionOutput->track; // Gets track;
+//             turnInput.desiredHeadingTrack = waypointOutput->desiredTrack;
+//             turnInput.accY = imudata->accy;
+
+//             // Set up the compute altitude and airspeed function input
+//             altAirspeedInput.currentAltitude = sensFusionOutput->altitude;
+//             altAirspeedInput.desiredAltitude = waypointOutput->desiredAltitude;
+//             altAirspeedInput.currentAirspeed = sensFusionOutput->airspeed;
+//             altAirspeedInput.desiredAirspeed = waypointOutput->desiredAirspeed;
+//             break;
+//         default:
+//             //should default to cruising
+
+//             turnInput.currentHeadingTrack = sensFusionOutput->track; // Gets track;
+//             turnInput.desiredHeadingTrack = waypointOutput->desiredTrack;
+//             turnInput.accY = imudata->accy;
+
+//             // Set up the compute altitude and airspeed function input
+//             altAirspeedInput.currentAltitude = sensFusionOutput->altitude;
+//             altAirspeedInput.desiredAltitude = waypointOutput->desiredAltitude;
+//             altAirspeedInput.currentAirspeed = sensFusionOutput->airspeed;
+//             altAirspeedInput.desiredAirspeed = waypointOutput->desiredAirspeed;
+
+//     }
+
+//     if(pathMgr->stage!=CRUISING)
+//     {
+//         LandingTakeoffManager::translateLTSFCommandsToCoordTurns(*landingTakeoffOutput, *sensFusionOutput, *imudata, turnInput, altAirspeedInput);
+//     }
+
+//     // Call module functions
+//     AutoSteer_ComputeCoordinatedTurn(&turnInput, &_rollandrudder);
+//     AutoSteer_ComputeAltitudeAndAirspeed(&altAirspeedInput, &_pitchandairspeed);
+
+//     //passby functionality
+    
+//     if(landingTakeoffOutput->controlDetails.pitchPassby)
+//     {
+//         _pitchandairspeed.requiredPitch = landingTakeoffOutput->controlDetails.pitchPercent;
+//     }
+
+//     if(landingTakeoffOutput->controlDetails.throttlePassby)
+//     {
+//         _pitchandairspeed.requiredThrottlePercent = landingTakeoffOutput->controlDetails.throttlePercent;
+//     }
+
+//     if(landingTakeoffOutput->controlDetails.rollPassby)
+//     {
+//         _rollandrudder.requiredRoll = landingTakeoffOutput->controlDetails.rollPercent;
+//     }
+
+//     if(landingTakeoffOutput->controlDetails.rudderPassby)
+//     {
+//         _rollandrudder.requiredRudderPosition = landingTakeoffOutput->controlDetails.rudderPercent;
+//     }
+    
+//     if(pathMgr->isError)
+//     {
+//         pathMgr->setState(fatalFailureMode::getInstance());
+//     }
+//     else
+//     {
+//         pathMgr->setState(commsWithAttitude::getInstance());
+//     }
+// }
+
+// pathManagerState& coordinateTurnElevation::getInstance()
+// {
+//     static coordinateTurnElevation singleton;
+//     return singleton;
+// }
+
+void fatalFailureMode::execute(pathManager* pathMgr)
+{
+    pathMgr->setState(fatalFailureMode::getInstance());
+}
+
+pathManagerState& fatalFailureMode::getInstance()
+{
+    static fatalFailureMode singleton;
+    return singleton;
+}
+
+/****************************************************************************************************
+LANDING STATE FUNCTIONS
+****************************************************************************************************/
+
+void landingStage::execute(pathManager* pathMgr)
+{
+    pathMgr->stage = LANDING;
+    //load in sensor fusion data and telemtry data into input structure
+    input.telemetryData = commsWithTelemetry::GetTelemetryIncomingData();
+    input.sensorOutput = sensorFusion::GetSFOutput();
+
+    //Think I need to get rid of this if statement as we should continuously create target and currentLocation waypoints
+    // if(!pathMgr->madeLandingPoints)
+    // {
+        //Getting current location from sensor fusion 
+        currentLocation = landingPath.initialize_waypoint(input.sensorOutput->longitude, input.sensorOutput->latitude, input.sensorOutput->altitude, LANDING_WAYPOINT); 
+
+        // Gordon this is for you! - targetWaypoint Must have long, lat, alt, and waypointType = LANDING
+        // targetWaypoint = someFancyLandingTakeoffMath
+
+        //initializing flight path - sets the relationship between current location's and target's pointers
+        waypointStatus = landingPath.initialize_flight_path(targetWaypoint, currentLocation);
+
+        // pathMgr->madeLandingPoints = true;
+    // }
+
+    //we use this instead of the currentLocationWaypoint for get_next_directions for reasons I hate 
+    waypointInput.latitude = input.sensorOutput->latitude;
+    waypointInput.longitude = input.sensorOutput->longitude;
+    waypointInput.altitude = input.sensorOutput->altitude;
+    waypointInput.track = input.sensorOutput->track;
+
+    //going from current to target, 
+    waypointStatus = landingPath.get_next_directions(waypointInput, &waypointOutput);
+
+    //maintaining altitude
+    waypointOutput.desiredAirspeed = CRUISING_AIRSPEED;
+
+
+    if(landingStage::waypointStatus != WAYPOINT_SUCCESS)
+    {
+        pathMgr->isError = true;
+    }
+
+    if(pathMgr->isError)
+    {
+        pathMgr->setState(fatalFailureMode::getInstance());
+    }
+    else
+    {
+        pathMgr->setState(commsWithAttitude::getInstance());
+    }
+}
+
+pathManagerState& landingStage::getInstance()
+{
+    static landingStage singleton;
+    return singleton;
+}
+
+
+/****************************************************************************************************
+TAKEOFF STATE FUNCTIONS
+****************************************************************************************************/
+
+//create a count to 1000 -> then proceed to takeoff. 
+void preflightStage::execute(pathManager* pathMgr)
+{
+    //load in sensor fusion data and telemtry data into input structure
+    input.telemetryData = commsWithTelemetry::GetTelemetryIncomingData();
+    input.sensorOutput = sensorFusion::GetSFOutput();
+
+    
+    // This is the part where we ~wait~ before going to takeoff...not entirely sure if I'm doing this right 
+    // I'll make this a const later once I know if this actually works 
+
+    if (cycleCount < 1000){
+        cycleCount++; 
+        preFlightComplete = false;
+    } else { 
+        preFlightComplete = true; 
+        cycleCount = 0; 
+    }
+
+
+    if(preflightStage::waypointStatus != WAYPOINT_SUCCESS)
+    {
+        pathMgr->isError = true;
+    }
+
+    if(pathMgr->isError)
+    {
+        pathMgr->setState(fatalFailureMode::getInstance());
+    }
+    else
+    {
+        // pathMgr->setState(coordinateTurnElevation::getInstance());
+        pathMgr->setState(commsWithAttitude::getInstance());
+    }
+}
+
+pathManagerState& preflightStage::getInstance()
+{
+    static preflightStage singleton;
+    return singleton;
+}
+
+void takeoffStage::execute(pathManager* pathMgr)
+{
+    //load in sensor fusion data and telemtry data into input structure
+    input.telemetryData = commsWithTelemetry::GetTelemetryIncomingData();
+    input.sensorOutput = sensorFusion::GetSFOutput();
+
+        // we use this instead of the currentLocationWaypoint for get_next_directions for reasons I hate 
+        waypointInput.latitude = input.sensorOutput->latitude;
+        waypointInput.longitude = input.sensorOutput->longitude;
+        waypointInput.altitude = input.sensorOutput->altitude;
+        waypointInput.track = input.sensorOutput->track;
+
+         //Getting current location from sensor fusion 
+        currentLocation = takeOffPath.initialize_waypoint(input.sensorOutput->longitude, input.sensorOutput->latitude, input.sensorOutput->altitude, LANDING_WAYPOINT); 
+
+        // Gordon this is for you! - targetWaypoint Must have long, lat, alt, and waypointType = TAKEOFF
+        // targetWaypoint = someFancyLandingTakeoffMath
+
+        //initializing flight path - sets the relationship between current location's and target's pointers
+        waypointStatus = takeOffPath.initialize_flight_path(targetWaypoint, currentLocation);
+
+        // Going from current to target
+        waypointStatus = takeOffPath.get_next_directions(waypointInput, &waypointOutput);
+
+        //maintaining altitude
+        waypointOutput.desiredAirspeed = CRUISING_AIRSPEED;        
+        
+
+    if(waypointStatus != WAYPOINT_SUCCESS)
+    {
+        pathMgr->isError = true;
+    }
+
+    if(pathMgr->isError)
+    {
+        pathMgr->setState(fatalFailureMode::getInstance());
+    }
+    else
+    {
+        pathMgr->setState(commsWithAttitude::getInstance());
+    }
+}
+
+pathManagerState& takeoffStage::getInstance()
+{
+    static takeoffStage singleton;
+    return singleton;
+}
+
+#endif
